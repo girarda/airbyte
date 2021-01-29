@@ -44,7 +44,6 @@ cmd_publish() {
   echo "image_name $image_name"
   echo "$versioned_image $versioned_image"
   echo "latest_image $latest_image"
-  
   docker tag "$image_name:dev" "$versioned_image"
   docker tag "$image_name:dev" "$latest_image"
 
