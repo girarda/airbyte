@@ -25,6 +25,44 @@ _PAGE_SIZE: int = 1000
 _SLICE_RANGE = 365
 _OUTGOING_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _INCOMING_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+_START_DATE = datetime.datetime(2020,1,1, 0,0,0).timestamp()
+_DEFAULT_CONCURRENCY = 10
+_MAX_CONCURRENCY = 10
+_RATE_LIMIT_PER_MINUTE = 120
+from airbyte_cdk.sources.concurrent_source.concurrent_source_adapter import ConcurrentSourceAdapter
+from airbyte_cdk.sources.concurrent_source.concurrent_source import ConcurrentSource
+import logging
+from airbyte_cdk.sources.streams.call_rate import AbstractAPIBudget, HttpAPIBudget, HttpRequestMatcher, MovingWindowCallRatePolicy, Rate
+
+from typing import Any, Iterator, List, Mapping, MutableMapping, Optional, Tuple, Union
+
+import pendulum
+import requests
+from airbyte_cdk import AirbyteLogger
+from airbyte_cdk.logger import AirbyteLogFormatter
+from airbyte_cdk.models import AirbyteMessage, AirbyteStateMessage, ConfiguredAirbyteCatalog, ConfiguredAirbyteStream, Level, SyncMode
+from airbyte_cdk.sources.concurrent_source.concurrent_source import ConcurrentSource
+from airbyte_cdk.sources.concurrent_source.concurrent_source_adapter import ConcurrentSourceAdapter
+from airbyte_cdk.sources.connector_state_manager import ConnectorStateManager
+from airbyte_cdk.sources.message import InMemoryMessageRepository
+from airbyte_cdk.sources.source import TState
+from airbyte_cdk.sources.streams import Stream
+from airbyte_cdk.sources.streams.concurrent.adapters import StreamFacade
+from airbyte_cdk.sources.streams.concurrent.cursor import ConcurrentCursor, CursorField, FinalStateCursor
+from airbyte_cdk.sources.streams.http.auth import TokenAuthenticator
+from airbyte_cdk.sources.utils.schema_helpers import InternalConfig
+from airbyte_cdk.utils.traced_exception import AirbyteTracedException
+from airbyte_protocol.models import FailureType
+from dateutil.relativedelta import relativedelta
+from pendulum.parsing.exceptions import ParserError
+from requests import codes, exceptions  # type: ignore[import]
+from airbyte_cdk.sources.streams.concurrent.state_converters.datetime_stream_state_converter import EpochValueConcurrentStreamStateConverter
+from airbyte_cdk.sources.streams.call_rate import AbstractAPIBudget, HttpAPIBudget, HttpRequestMatcher, MovingWindowCallRatePolicy, Rate
+
+
+_logger = logging.getLogger("airbyte")
+
 class SurveyMonkeyBaseStream(HttpStream, ABC):
     def __init__(self, name: str, path: str, primary_key: Union[str, List[str]], data_field: Optional[str], cursor_field: Optional[str],
 **kwargs: Any) -> None:
@@ -34,6 +72,17 @@ class SurveyMonkeyBaseStream(HttpStream, ABC):
         self._data_field = data_field
         self._cursor_field = cursor_field
         super().__init__(**kwargs)
+
+        policies = [
+            MovingWindowCallRatePolicy(
+                rates=[Rate(limit=_RATE_LIMIT_PER_MINUTE, interval=datetime.timedelta(minutes=1))],
+                matchers=[],
+            ),
+        ]
+        api_budget = HttpAPIBudget(policies=policies)
+        super().__init__(api_budget=api_budget, **kwargs)
+
+    state_converter = EpochValueConcurrentStreamStateConverter()
 
 
     url_base = "https://api.surveymonkey.com"
@@ -173,8 +222,24 @@ class SurveyMonkeySubstream(HttpStream, ABC):
             for parent_record in self._parent_stream.read_records(sync_mode=SyncMode.full_refresh, stream_slice=_slice):
                 yield parent_record
 
-# Source
-class SourceSurveyMonkeyDemo(AbstractSource):
+class SourceSurveyMonkeyDemo(ConcurrentSourceAdapter):
+    message_repository = InMemoryMessageRepository(Level(AirbyteLogFormatter.level_mapping[_logger.level]))
+
+    def __init__(self, config: Optional[Mapping[str, Any]], state: Optional[Mapping[str, Any]]):
+        if config:
+            concurrency_level = min(config.get("num_workers", _DEFAULT_CONCURRENCY), _MAX_CONCURRENCY)
+        else:
+            concurrency_level = _DEFAULT_CONCURRENCY
+        _logger.info(f"Using concurrent cdk with concurrency level {concurrency_level}")
+        concurrent_source = ConcurrentSource.create(
+            concurrency_level, concurrency_level // 2, _logger, self._slice_logger, self.message_repository
+        )
+        super().__init__(concurrent_source)
+        self._config = config
+        self._state = state
+
+    def _get_slice_boundary_fields(self, stream: Stream, state_manager: ConnectorStateManager) -> Optional[Tuple[str, str]]:
+        return ("start_date", "end_date")
     def check_connection(self, logger, config) -> Tuple[bool, any]:
         first_stream = next(iter(self.streams(config)))
 
