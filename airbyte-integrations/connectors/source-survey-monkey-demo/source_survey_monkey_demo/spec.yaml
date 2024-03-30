@@ -4,9 +4,10 @@ connectionSpecification:
   title: Survey Monkey Demo Spec
   type: object
   required:
-    - TODO
+    - access_token
   properties:
-    # 'TODO: This schema defines the configuration required for the source. This usually involves metadata such as database and/or authentication information.':
-    TODO:
+    access_token:
       type: string
-      description: describe me
+      description: "Access token for Survey Monkey API"
+      order: 0
+      airbyte_secret: true
