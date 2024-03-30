@@ -119,6 +119,59 @@ class SurveyMonkeyBaseStream(HttpStream, ABC):
             yield after_ts, before_ts
             after_ts = before_ts + 1
 
+class SurveyMonkeySubstream(HttpStream, ABC):
+
+    def __init__(self, name: str, path: str, primary_key: Union[str, List[str]], parent_stream: Stream, **kwargs: Any) -> None:
+        self._name = name
+        self._path = path
+        self._primary_key = primary_key
+        self._parent_stream = parent_stream
+        super().__init__(**kwargs)
+
+    url_base = "https://api.surveymonkey.com"
+
+    def next_page_token(self, response: requests.Response) -> Optional[Mapping[str, Any]]:
+        links = response.json().get("links", {})
+        if "next" in links:
+            return {"next_url": links["next"]}
+        else:
+            return {}
+
+    def request_params(
+        self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
+    ) -> MutableMapping[str, Any]:
+        if next_page_token:
+            return urlparse(next_page_token["next_url"]).query
+        else:
+            return {"per_page": _PAGE_SIZE}
+
+    def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
+        yield from response.json().get("data", [])
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def path(
+        self,
+        *,
+        stream_state: Optional[Mapping[str, Any]] = None,
+        stream_slice: Optional[Mapping[str, Any]] = None,
+        next_page_token: Optional[Mapping[str, Any]] = None,
+    ) -> str:
+        try:
+            return self._path.format(stream_slice=stream_slice)
+        except Exception as e:
+            raise e
+
+    @property
+    def primary_key(self) -> Optional[Union[str, List[str], List[List[str]]]]:
+        return self._primary_key
+
+    def stream_slices(self, stream_state: Mapping[str, Any] = None, **kwargs) -> Iterable[Optional[Mapping[str, any]]]:
+        for _slice in self._parent_stream.stream_slices():
+            for parent_record in self._parent_stream.read_records(sync_mode=SyncMode.full_refresh, stream_slice=_slice):
+                yield parent_record
 
 # Source
 class SourceSurveyMonkeyDemo(AbstractSource):
@@ -144,4 +197,9 @@ class SourceSurveyMonkeyDemo(AbstractSource):
 
     def streams(self, config: Mapping[str, Any]) -> List[Stream]:
         auth = TokenAuthenticator(token=config["access_token"])
-        return [SurveyMonkeyBaseStream(name="surveys", path="/v3/surveys", primary_key="id", data_field="data", cursor_field="date_modified", authenticator=auth)]
+        surveys = SurveyMonkeyBaseStream(name="surveys", path="/v3/surveys", primary_key="id", data_field="data", cursor_field="date_modified", authenticator=auth)
+        survey_responses = SurveyMonkeySubstream(name="survey_responses", path="/v3/surveys/{stream_slice[id]}/responses/", primary_key="id", authenticator=auth, parent_stream=surveys)
+        return [
+            surveys,
+            survey_responses
+            ]
