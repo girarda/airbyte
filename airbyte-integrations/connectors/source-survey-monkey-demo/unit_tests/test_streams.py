@@ -13,8 +13,6 @@ _DATA_FIELD = "data"
 
 def test_request_params():
     stream = SurveyMonkeyBaseStream(_STREAM_NAME, _PATH, _PRIMARY_KEY, _DATA_FIELD)
-    # TODO: replace this with your input parameters
     inputs = {"stream_slice": None, "stream_state": None, "next_page_token": None}
-    # TODO: replace this with your expected request parameters
-    expected_params = {"include": "response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats"}
+    expected_params = {"include": "response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats", "per_page": 1000}
     assert stream.request_params(**inputs) == expected_params

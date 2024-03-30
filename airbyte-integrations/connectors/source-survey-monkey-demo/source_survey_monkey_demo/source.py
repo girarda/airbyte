@@ -5,6 +5,7 @@
 
 from abc import ABC
 from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import requests
 from airbyte_cdk.sources import AbstractSource
@@ -12,6 +13,7 @@ from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources.streams.http import HttpStream
 from airbyte_cdk.sources.streams.http.auth import Oauth2Authenticator, TokenAuthenticator
 
+_PAGE_SIZE = 1000
 
 class SurveyMonkeyBaseStream(HttpStream, ABC):
     def __init__(self, name: str, path: str, primary_key: Union[str, List[str]], data_field: Optional[str], **kwargs: Any) -> None:
@@ -24,12 +26,21 @@ class SurveyMonkeyBaseStream(HttpStream, ABC):
     url_base = "https://api.surveymonkey.com"
 
     def next_page_token(self, response: requests.Response) -> Optional[Mapping[str, Any]]:
-        return None
+            links = response.json().get("links", {})
+            if "next" in links:
+                return {"next_url": links["next"]}
+            else:
+                return {}
+
 
     def request_params(
         self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
     ) -> MutableMapping[str, Any]:
-        return {"include": "response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats"}
+        if next_page_token:
+            return urlparse(next_page_token["next_url"]).query
+        else:
+            return {"include": "response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats",
+                    "per_page": _PAGE_SIZE}
 
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
         response_json = response.json()

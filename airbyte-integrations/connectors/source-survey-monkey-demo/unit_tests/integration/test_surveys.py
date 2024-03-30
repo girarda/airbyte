@@ -24,7 +24,7 @@ class FullRefreshTest(TestCase):
     def test_read_a_single_page(self, http_mocker: HttpMocker) -> None:
 
         http_mocker.get(
-            HttpRequest(url="https://api.surveymonkey.com/v3/surveys?include=response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats"),
+            HttpRequest(url="https://api.surveymonkey.com/v3/surveys?include=response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats&per_page=1000"),
             HttpResponse(body="""
             {
   "data": [
@@ -36,6 +36,57 @@ class FullRefreshTest(TestCase):
     },
     {
       "id": "1234",
+      "title": "My Survey",
+      "nickname": "",
+      "href": "https://api.surveymonkey.com/v3/surveys/1234"
+    }
+  ],
+  "per_page": 50,
+  "page": 1,
+  "total": 2,
+  "links": {
+    "self": "https://api.surveymonkey.com/v3/surveys?page=1&per_page=50"
+  }
+}
+""", status_code=200)
+        )
+
+        output = self._read(_A_CONFIG, _configured_catalog("surveys", SyncMode.full_refresh))
+
+        assert len(output.records) == 2
+
+    @HttpMocker()
+    def test_read_multiple_pages(self, http_mocker: HttpMocker) -> None:
+
+        http_mocker.get(
+            HttpRequest(url="https://api.surveymonkey.com/v3/surveys?include=response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats&per_page=1000"),
+            HttpResponse(body="""
+            {
+  "data": [
+    {
+      "id": "1234",
+      "title": "My Survey",
+      "nickname": "",
+      "href": "https://api.surveymonkey.com/v3/surveys/1234"
+    }
+  ],
+  "per_page": 50,
+  "page": 1,
+  "total": 2,
+  "links": {
+    "self": "https://api.surveymonkey.com/v3/surveys?page=1&per_page=50",
+    "next": "https://api.surveymonkey.com/v3/surveys?include=response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats&per_page=1000&page=2"
+  }
+}
+""", status_code=200)
+        )
+        http_mocker.get(
+            HttpRequest(url="https://api.surveymonkey.com/v3/surveys?include=response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats&per_page=1000&page=2"),
+            HttpResponse(body="""
+            {
+  "data": [
+    {
+      "id": "5678",
       "title": "My Survey",
       "nickname": "",
       "href": "https://api.surveymonkey.com/v3/surveys/1234"
