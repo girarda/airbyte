@@ -18,16 +18,23 @@ from airbyte_cdk.sources.streams.availability_strategy import AvailabilityStrate
 from airbyte_cdk.models import FailureType, SyncMode, AirbyteMessage
 from requests import HTTPError, codes, exceptions  # type: ignore[import]
 from airbyte_cdk.utils.traced_exception import AirbyteTracedException
+import datetime
 
-_PAGE_SIZE = 1000
-
+_START_DATE = datetime.datetime(2020,1,1, 0,0,0).timestamp()
+_PAGE_SIZE: int = 1000
+_SLICE_RANGE = 365
+_OUTGOING_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+_INCOMING_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 class SurveyMonkeyBaseStream(HttpStream, ABC):
-    def __init__(self, name: str, path: str, primary_key: Union[str, List[str]], data_field: Optional[str], **kwargs: Any) -> None:
+    def __init__(self, name: str, path: str, primary_key: Union[str, List[str]], data_field: Optional[str], cursor_field: Optional[str],
+**kwargs: Any) -> None:
         self._name = name
         self._path = path
         self._primary_key = primary_key
         self._data_field = data_field
+        self._cursor_field = cursor_field
         super().__init__(**kwargs)
+
 
     url_base = "https://api.surveymonkey.com"
 
@@ -46,7 +53,11 @@ class SurveyMonkeyBaseStream(HttpStream, ABC):
             return urlparse(next_page_token["next_url"]).query
         else:
             return {"include": "response_count,date_created,date_modified,language,question_count,analyze_url,preview,collect_stats",
-                    "per_page": _PAGE_SIZE}
+                    "per_page": _PAGE_SIZE,
+                    "sort_by": "date_modified", "sort_order": "ASC",
+                    "start_modified_at": datetime.datetime.strftime(datetime.datetime.fromtimestamp(stream_slice["start_date"]), _OUTGOING_DATETIME_FORMAT), 
+                    "end_modified_at": datetime.datetime.strftime(datetime.datetime.fromtimestamp(stream_slice["end_date"]), _OUTGOING_DATETIME_FORMAT)
+                    }
 
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
         response_json = response.json()
@@ -82,6 +93,31 @@ class SurveyMonkeyBaseStream(HttpStream, ABC):
     @property
     def availability_strategy(self) -> Optional[AvailabilityStrategy]:
         return None
+    
+    @property
+    def cursor_field(self) -> Optional[str]:
+        return self._cursor_field
+
+    def get_updated_state(self, current_stream_state: MutableMapping[str, Any], latest_record: Mapping[str, Any]) -> Mapping[str, Any]:
+        state_value = max(current_stream_state.get(self.cursor_field, 0), datetime.datetime.strptime(latest_record.get(self._cursor_field, ""), _INCOMING_DATETIME_FORMAT).timestamp())
+        return {self._cursor_field: state_value} 
+
+    def stream_slices(self, stream_state: Mapping[str, Any] = None, **kwargs) -> Iterable[Optional[Mapping[str, any]]]:
+        start_ts = stream_state.get(self._cursor_field, _START_DATE) if stream_state else _START_DATE
+        now_ts = datetime.datetime.now().timestamp()
+        if start_ts >= now_ts:
+            yield from []
+            return
+        for start, end in self.chunk_dates(start_ts, now_ts):
+            yield {"start_date": start, "end_date": end}
+
+    def chunk_dates(self, start_date_ts: int, end_date_ts: int) -> Iterable[Tuple[int, int]]:
+        step = int(_SLICE_RANGE * 24 * 60 * 60)
+        after_ts = start_date_ts
+        while after_ts < end_date_ts:
+            before_ts = min(end_date_ts, after_ts + step)
+            yield after_ts, before_ts
+            after_ts = before_ts + 1
 
 
 # Source
@@ -108,4 +144,4 @@ class SourceSurveyMonkeyDemo(AbstractSource):
 
     def streams(self, config: Mapping[str, Any]) -> List[Stream]:
         auth = TokenAuthenticator(token=config["access_token"])
-        return [SurveyMonkeyBaseStream(name="surveys", path="v3/surveys", primary_key="id", data_field="data", authenticator=auth)]
+        return [SurveyMonkeyBaseStream(name="surveys", path="/v3/surveys", primary_key="id", data_field="data", cursor_field="date_modified", authenticator=auth)]
